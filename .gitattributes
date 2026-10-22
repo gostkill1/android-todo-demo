@@ -1,0 +1,12 @@
+# 原生工程里的 shell 脚本必须保持 LF，否则 Git for Windows 检出时可能写成 CRLF 导致 gradlew 在 macOS/Linux 上跑不起来
+gradlew text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+
+*.png binary
+*.jpg binary
+*.webp binary
+*.jar binary
+*.keystore binary
+*.apk binary
+*.aab binary

@@ -1,0 +1,25 @@
+// 图书馆/内网环境下 repo.maven.apache.org、services.gradle.org、plugins.gradle.org 连不通，
+// 用 `-I gradle-mirror.init.gradle` 让本次构建优先走阿里镜像。只影响带该参数的构建，不写全局配置。
+def MIRRORS = [
+    'https://maven.aliyun.com/repository/gradle-plugin',
+    'https://maven.aliyun.com/repository/google',
+    'https://maven.aliyun.com/repository/central',
+    'https://maven.aliyun.com/repository/public',
+]
+
+def addMirrors = { handler ->
+    MIRRORS.each { mirror -> handler.maven { it.url = mirror } }
+}
+
+beforeSettings { settings ->
+    addMirrors(settings.pluginManagement.repositories)
+    try {
+        addMirrors(settings.dependencyResolutionManagement.repositories)
+    } catch (Exception ignored) {
+    }
+}
+
+allprojects { project ->
+    addMirrors(project.buildscript.repositories)
+    addMirrors(project.repositories)
+}

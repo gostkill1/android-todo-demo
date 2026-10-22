@@ -1,0 +1,20 @@
+node_modules/
+.expo/
+dist/
+web-build/
+npm-debug.*
+.npm-cache/
+_icon-backup/
+
+# Android 构建产物（android/.gitignore 已盖住 build/ .gradle/ local.properties .cxx/）
+android/.kotlin/
+android/app/build/
+android/app/debug.keystore
+*.apk
+*.aab
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+*.log
+.DS_Store

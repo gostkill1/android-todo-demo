@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "待办清单",
+    "slug": "android-todo-demo",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.demo.androidtodo",
+      "icon": "./assets/app-icon.png"
+    },
+    "plugins": [
+      "expo-notifications",
+      "expo-status-bar"
+    ]
+  }
+}
