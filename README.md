@@ -9,9 +9,12 @@
 
 ```bash
 npm install
-npx expo start        # 手机上装 Expo Go 扫码，或在 Expo Go 里输入终端给的 exp:// 地址
-npm run android       # 已经连着 USB 时直接用安卓模拟器/真机跑原生壳
+npm start -- --lan    # 手机和电脑连同一个 Wi-Fi，用 Expo Go 扫码，或在 Expo Go 里输入终端给出的 exp:// 地址
 ```
+
+`--lan` 不能省：默认模式只提供 `localhost` 地址，手机连不到这台电脑。
+
+想直接用原生壳跑（而不是 Expo Go）用 `npm run android`，但它是 `expo run:android`，**不会带上 `-I ../gradle-mirror.init.gradle`**，国内网络很可能卡在依赖解析上；要构建 APK 请用下面「构建 APK」一节的手写命令。
 
 用 USB 线连手机时，可以先执行 `adb reverse tcp:8081 tcp:8081`，再在 Expo Go 中输入 `exp://localhost:8081`，不依赖同一个 Wi-Fi。
 
