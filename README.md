@@ -1,9 +1,9 @@
 # 待办清单 Demo（Expo + React Native · 安卓）
 
-一个安卓待办应用的预览 Demo：首页把任务分成逾期／今天／未来三组，底部三个平级标签（首页 / 日历 / 设置）可以点也可以左右滑切换，新建和编辑同一页、用自绘的五列滚轮选日期时间。通知有两条线：**每日汇总**在固定时间报一次总数，**每条待办**则在自己的时间响一次（带一段合成的「叮」音效）；愿意的话也可以把某条改成交给系统日历的「创建日程」页。全部逻辑在单个 `App.tsx` 里，没有导航库、没有图标库、没有 UI 库。
+一个安卓待办应用的预览 Demo：首页把任务分成逾期／今天／未来三组，底部三个平级标签（首页 / 日历 / 设置）可以点也可以左右滑切换，新建和编辑同一页、用自绘的五列滚轮选日期时间。通知有两条线：**每日汇总**在固定时间报一次总数，**每条待办**则在自己的时间响一次（用系统默认通知音，音色可以在系统渠道页里换）；愿意的话也可以把某条改成交给系统日历的「创建日程」页。代码按页面／组件／hook／纯函数分成 `App.tsx` + `src/` 几层，没有导航库、没有图标库、没有 UI 库。
 
 - **截图**：待补，计划放在 `docs/screenshots/`。
-- **技术栈**：Expo SDK 57、React Native 0.86、React 19、TypeScript；持久化用 `@react-native-async-storage/async-storage`；原生侧只有一个手写的 Kotlin 模块（发日历意图）。
+- **技术栈**：Expo SDK 57、React Native 0.86、React 19、TypeScript；持久化用 `@react-native-async-storage/async-storage`；原生侧只有两个手写的 Kotlin 模块（发日历意图、按系统音色建通知渠道）。
 
 ## 快速开始
 
@@ -52,22 +52,36 @@ JS 由 Gradle 的 Expo 插件自己打包，不需要提前跑 `expo export`。�
 - **`USE_EXACT_ALARM` 是安装即授予的特殊权限**，不弹框，用户只能在系统设置的「闹钟和提醒」里看到/关掉；没有它，`expo-notifications` 会静默改用非精确闹钟，到点通知晚十几分钟。
 - **DAILY 触发器是非精确闹钟**，小米等机型上可能晚几分钟到几十分钟。
 - 小米等机型要在系统设置里允许该应用自启动并取消省电限制，否则到点的提醒可能被系统拦截。
+- **到点通知的音色应用自己改不了**：安卓只认渠道创建那一刻的音色，而澎湃不播应用自带的音频文件。要换声音，去设置页「到点提醒铃声」跳进来的系统渠道页里挑（详见附录「声音」一节）。
 - 安卓 15（`edgeToEdgeEnabled=true`）起内容画到状态栏和手势横条底下：顶部留白用 `StatusBar.currentHeight` 算，底部避让是固定值，没装 `react-native-safe-area-context`。
 
 ## 目录结构
 
 ```
-App.tsx                     全部界面与逻辑（页面用 page 状态切换，不是导航栈）
+App.tsx                     状态、存档读写、任务增删改、通知 hook 装配，末尾五行页面开关（页面用 page 状态切换，不是导航栈）
+src/types.ts                Todo / Reminder / Wheel / Page
+src/styles.ts               一张 StyleSheet + screenStyle()（顶部避让状态栏）
+src/lib/constants.ts        AsyncStorage 的 key、行高、默认提醒、标签栏顺序
+src/lib/dates.ts            日期换算、滚轮下限（minWheel / editFloor / clampWheel）
+src/lib/todos.ts            示例任务、逾期文案、这条任务会不会响（isRingable）
+src/lib/notifications.ts    两条渠道 id、已废弃渠道清单、原生建渠道、跳系统设置
+src/lib/calendar.ts         调原生模块发日历意图
+src/hooks/useNotifyPermission.ts   通知权限：读一次 + 要一次
+src/hooks/useTaskAlarms.ts         整批重排每条待办的到点通知
+src/hooks/useDailyReminder.ts      每日汇总的排程与「改了立刻生效」
+src/components/{Header,TabBar,Action,TodoRow,WheelColumn,TabShell}.tsx
+src/screens/{Home,Calendar,Reminder,Compose,Settings}Screen.tsx
 app.json                    Expo 配置；android.icon 指向 assets/app-icon.png
 assets/app-icon.png         图标唯一源文件
 make-icons.ps1              缩放生成 mipmap-*/ic_launcher(.round).png
-make-sound.mjs              合成通知音，直出 res/raw/ding.wav
-android/app/src/main/res/raw/ding.wav  通知音效（0.8s「叮」）
 gradle-mirror.init.gradle   可选：构建时优先走阿里镜像
-android/                    已提交的原生工程（含 Kotlin 日历模块，勿 prebuild）
-android/app/src/main/java/com/demo/androidtodo/SystemCalendarModule.kt
+android/                    已提交的原生工程（含两个 Kotlin 模块，勿 prebuild）
+android/app/src/main/java/com/demo/androidtodo/SystemCalendarModule.kt   发日历意图
+android/app/src/main/java/com/demo/androidtodo/NotificationTuningModule.kt   原生建渠道 + 跳渠道设置页
 .expo/  node_modules/  .npm-cache/  build/  *.apk   已在 .gitignore 里
 ```
+
+> `App.tsx` 必须留在仓库根目录：`package.json` 的 main 是 `node_modules/expo/AppEntry.js`，它写死了 `import App from '../../App'`。`src/` 里的路径都是相对它引的，所以拆目录不需要动任何构建配置。
 
 ---
 
@@ -147,41 +161,45 @@ APK 里的行为（每天一条汇总，正文是算出来的）：
 - 权限只在**把开关拨到开**的那一刻申请；被拒绝则时间照存、通知不排，弹提示让你去系统设置里允许后「把开关关一下再打开」。之后 App 自己不会再弹权限框打扰。
 - `DAILY` 触发器是**非精确**闹钟，小米等机型上可能晚几分钟到几十分钟。每日汇总晚一点无所谓。每条待办自己的到点通知不走这个触发器，用的是 `DATE` 一次性触发器加 `USE_EXACT_ALARM`，见下一节。
 
-代码集中在 `App.tsx`：`applyReminder` 是唯一的排程入口（自动重算的 `useEffect` 和提醒页的即时提交 `commitReminder` 都调它，区别只在要不要申请权限），`reminderBody` 负责文案，`nextReminderDay` 负责算目标日。
+排程集中在 `src/hooks/useDailyReminder.ts`：`applyReminder` 是唯一的排程入口（自动重算的 `useEffect` 和提醒页的即时提交 `commitReminder` 都调它，区别只在要不要申请权限），`reminderBody` 负责文案、`nextReminderDay` 负责算目标日，这两个纯函数在 `src/lib/todos.ts`。
 
 ## 每条待办的到点通知
 
 2026-10-22 起，**每条未到点的待办都由本应用在自己的时间响一次**，不依赖系统日历。只有编辑页把「改用系统日历提醒」那一行打开的任务例外——那些交给日历，本应用不再重复响。
 
-- 通知排在独立渠道 `task-alarms-v3`：最高优先级 + 震动 + 「叮」音效，标题是 `⏰ HH:mm 待办`，正文是任务内容。
+- 通知排在独立渠道 `task-alarms-v5`：可出声的最高优先级 + 震动 + 系统默认通知音（音色为什么不由应用带，见下面那节），标题是 `⏰ HH:mm 待办`，正文是任务内容。
 - **同一分钟的多条合并成一条**通知：正文取前两条、中间用「、」，还有更多就追加「 等 N 件」。合并的 key 是「日期 时间」整串，所以不同日期的同一个分钟各响各的。
 - **整批重排，不做增量**：任务列表任何变化（新增、编辑、勾选完成、删除、隐藏）都会让那个 `useEffect` 把上一批全部取消，再按当前列表重排。取消要认 id，而这个版本的 `expo-notifications` 没有 `requestIdentifier` 可用（`build/` 与 android 源码都 grep 过），所以排出去的 id 数组记在 AsyncStorage 的 `@android-todo-demo/task-alarms` 里，重启后照样清得掉。列表算出来的签名（每组的 key + 正文）没变时由一个 `useRef` 拦住，不重复排程。
 - **权限只在第一次保存一条「真的会响」的待办时申请**——未来时间、未完成、日历开关关着，三者都满足才弹框，不是进 App 就要。被拒绝的话保存照样成功，但会弹「通知没开启」说明这条到点不会响；首页副标题在还有这类任务时也一直挂着「（通知没开启，到点不会响）」。
 - 排程那条 `useEffect` 以「已拿到通知权限」为前提（启动时只用 `getPermissionsAsync` 读一次，不主动弹框）。所以全新安装后、还没保存过任何会响的任务之前，示例任务里那条 3 天后的待办并不会排上；一旦权限到手，**整个列表一起补排**，不只补刚保存的那一条。
 - 排程本身失败（Expo Go、非安卓环境、通知服务起不来）只 `console.warn`，不弹窗刷屏；那条路径上用户能看到的就是副标题那句提示。
 
-### 音效是合成的，渠道 id 因此要换代
+### 设置页的「到点提醒铃声」跳到哪一页
 
-安卓 8 以后**声音绑在通知渠道上**：单条通知里写的 `sound` 会被忽略，而且**一个已经存在的渠道，应用自己改不了它的声音**。所以换音效只能换渠道 id——`-v2` 是加「叮」时换的，`-v3` 是 2026-10-22 修下面那个「声音压根没设上」的 bug 时换的（v2 那批渠道已经带着错的值冻结了）。两条渠道一起换代，每日汇总和到点通知用同一个音。旧 id 的渠道在系统设置里会留着，直到卸载或手动清理，属预期。
+这一行走原生 `openChannelSettings('task-alarms-v5')`，intent 是 `Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS` + 包名 + 渠道 id。在澎湃上它直接落到「任务到点提醒」那一页（允许通知 / 悬浮通知 / 声音 / 振动 / 在锁定屏幕上），**声音那一行是唯一能改这个渠道音色的地方**——应用自己写不进去，原因见下一节。单渠道页叫不开时退到 `ACTION_APP_NOTIFICATION_SETTINGS`（本应用的通知总页），两处都叫不开才弹「打不开通知设置」那条兜底提示。
 
-「叮」是一段 0.8 秒、三条泛音（C6 / G6 / C7）按指数衰减的合成音，由根目录的 `make-sound.mjs` 手写 RIFF/WAVE 头直出，不依赖任何音频库：
+2026-10-22 之前这一行**一直**在走兜底：action 被写成了 `android.settings.CHANNEL_SETTINGS`，系统里没有任何页面响应它，所以每次都抛 `ActivityNotFoundException`。
+
+### 声音：应用不自带音效，音色归系统渠道页
+
+2026-10-22 起，**这个 App 不再管音色**。曾经的做法是合成一段 0.8 秒的「叮」（`make-sound.mjs` 直出 `res/raw/ding.wav`）写进渠道，在这台小米 15（HyperOS）上实测**永远不响**，方案当天就撤了：现在渠道建出来时挂系统的默认通知音，要换音色去设置页那一行跳过去的渠道页里挑。
+
+三条实测结论，就是这套做法的全部理由：
+
+1. **安卓 8 以后声音绑在渠道上，而且只在创建那一刻有效。** 单条通知里写的 `sound` 会被忽略；一个已经存在的渠道，应用自己也改不动它的声音（对已存在的 id 调 `setSound` + `createNotificationChannel` 是空操作）。所以任何改音色的动作都只能换渠道 id 重来——这就是 id 从 `daily-reminders` / `task-alarms` 一路走到 `-v5` 的原因，也是 `RETIRED_CHANNEL_IDS` 里那八个旧 id 要在启动时删掉的原因（设置页按**名字**列渠道，不清理就会堆成一排同名条目）。
+2. **`expo-notifications` 只会写 `android.resource://`，而澎湃对这种应用私有资源 URI 一律消音。** `setNotificationChannelAsync` 的 `sound` 收的是 `res/raw` 里的**文件名**，`SoundResolver` 用 `getIdentifier(name, "raw", packageName)` 查到了才拼成 `android.resource://<包名>/raw/<名字>`，查不到就静默回落成系统默认音、只在控制台打一条 error。消音那一半是 A/B 出来的：dumpsys 里渠道的 `mSound` 完全正确、`mUserLockedFields=0`、通知记录没有 SILENT 标志、SystemUI 也记了 `AlertCoordinator: onViewBound, buzzBeep`（说明系统决定要出声），但 `RingtonePlayer` 就是不出现 `play`。同一台机器上在 ROM 自己的界面里挑一个音，`mSound` 变成 `content://media/...`、字段被锁上，下一条通知立刻响。
+3. **AOSP 还会拒掉调用方读不到的 media URI**，所以「应用自己塞一个 `content://media/...` 进去」也走不通——会被改写回 `content://settings/system/notification_sound`。
+
+于是渠道改由原生先建（`NotificationTuningModule.ensureChannel`）：用 `RingtoneManager.getActualDefaultRingtoneUri()` 取系统默认通知音写进去，**抢在 expo 把 `android.resource://` 写进来之前**（声音只在创建时算数）；如果这个渠道的音色已经是你在系统页里手挑的 `content://media/...`，就原样留着不动它。当前两条渠道的状态：
 
 ```bash
-node make-sound.mjs    # 生成 android/app/src/main/res/raw/ding.wav
+adb shell dumpsys notification --noredact | grep -o "mId='task-alarms-v5'.*mSound=[^,]*"
+# 实测 mSound=content://media/internal/audio/media/260?title=WaterDrop_preview&canonical=1
 ```
 
-改音色就编辑脚本顶部那几个常量（`RATE` / `SECONDS` / `TAU` / `PARTIALS`）再跑一次，然后重新构建。
+`make-sound.mjs` 和 `android/app/src/main/res/raw/ding.wav` 还在仓库里，但**已经没有任何代码引用它们**，要清掉就直接删这两个文件。
 
-**`sound` 传的是文件名，不是 URI。** `setNotificationChannelAsync` 的 `sound` 会交给 `SoundResolver`：它把字符串当作 `res/raw` 里的资源名（顺手去掉扩展名），用 `getIdentifier(name, "raw", packageName)` 查，查到了才拼成 `android.resource://<包名>/raw/<名字>`，**查不到就静默回落成系统默认音**（`content://settings/system/notification_sound`），只在 JS 控制台打一条 error。所以这里写的是 `'ding.wav'`；v2 那版误写成完整 URI，被当作文件名截成了 `android.resource://com.demo` 这种不存在的资源名，于是要么没声音要么只有系统默认音。渠道到底设上了没有，看设备上的这一行最准：
-
-```bash
-adb shell dumpsys notification | grep -o "mId='task-alarms-v3'.*mSound=[^,]*"
-# 期望 mSound=android.resource://com.demo.androidtodo/raw/ding
-```
-
-**另一个坑**：release 构建里 AGP 的 `optimizeReleaseResources` 会缩短资源路径，`res/raw/ding.wav` 在 APK 里实际存成 `res/lf.wav` 这种名字，`unzip -l | grep raw/` 是查不到的，别当成文件没打进去——资源表里 `0x7f0f0000 raw/ding` 还在，URI 照样解析（`aapt2 dump resources` 可验）。
-
-**还没证实的部分**：`android.resource://` 这种渠道铃声在这台小米 15（HyperOS）上究竟会不会响，目前只有 dumpsys 证明它被正确写进了渠道；阿里云的推送文档声称「在客户端创建通道时小米机型调用 setSound() 指定铃声无效」，但同一台机器上飞书、Play Services 的渠道都挂着 `android.resource://.../raw/...`，所以这条说法不能当结论。如果换了 v3 还是哑的，下一个可动的地方是显式加 `audioAttributes`（usage=NOTIFICATION / contentType=SONIFICATION），再不行就退到系统设置里由用户手动给这个渠道选铃声。
+另外两条踩过的坑记在这儿：`AndroidImportance.MAX`（5）会被 `NotificationChannel` 构造函数拒掉，能出声的上限是 `HIGH`(4)，所以原生那层写了 `coerceIn(1, 4)`；release 构建里 AGP 的 `optimizeReleaseResources` 会缩短资源路径，`res/raw/ding.wav` 在 APK 里实际存成 `res/lf.wav` 这种名字，`unzip -l | grep raw/` 查不到不代表没打进去。
 
 ### 准点靠 `USE_EXACT_ALARM`
 
