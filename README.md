@@ -153,16 +153,16 @@ APK 里的行为（每天一条汇总，正文是算出来的）：
 
 2026-10-22 起，**每条未到点的待办都由本应用在自己的时间响一次**，不依赖系统日历。只有编辑页把「改用系统日历提醒」那一行打开的任务例外——那些交给日历，本应用不再重复响。
 
-- 通知排在独立渠道 `task-alarms-v2`：最高优先级 + 震动 + 「叮」音效，标题是 `⏰ HH:mm 待办`，正文是任务内容。
+- 通知排在独立渠道 `task-alarms-v3`：最高优先级 + 震动 + 「叮」音效，标题是 `⏰ HH:mm 待办`，正文是任务内容。
 - **同一分钟的多条合并成一条**通知：正文取前两条、中间用「、」，还有更多就追加「 等 N 件」。合并的 key 是「日期 时间」整串，所以不同日期的同一个分钟各响各的。
 - **整批重排，不做增量**：任务列表任何变化（新增、编辑、勾选完成、删除、隐藏）都会让那个 `useEffect` 把上一批全部取消，再按当前列表重排。取消要认 id，而这个版本的 `expo-notifications` 没有 `requestIdentifier` 可用（`build/` 与 android 源码都 grep 过），所以排出去的 id 数组记在 AsyncStorage 的 `@android-todo-demo/task-alarms` 里，重启后照样清得掉。列表算出来的签名（每组的 key + 正文）没变时由一个 `useRef` 拦住，不重复排程。
 - **权限只在第一次保存一条「真的会响」的待办时申请**——未来时间、未完成、日历开关关着，三者都满足才弹框，不是进 App 就要。被拒绝的话保存照样成功，但会弹「通知没开启」说明这条到点不会响；首页副标题在还有这类任务时也一直挂着「（通知没开启，到点不会响）」。
 - 排程那条 `useEffect` 以「已拿到通知权限」为前提（启动时只用 `getPermissionsAsync` 读一次，不主动弹框）。所以全新安装后、还没保存过任何会响的任务之前，示例任务里那条 3 天后的待办并不会排上；一旦权限到手，**整个列表一起补排**，不只补刚保存的那一条。
 - 排程本身失败（Expo Go、非安卓环境、通知服务起不来）只 `console.warn`，不弹窗刷屏；那条路径上用户能看到的就是副标题那句提示。
 
-### 音效是合成的，渠道 id 带 `-v2`
+### 音效是合成的，渠道 id 因此要换代
 
-安卓 8 以后**声音绑在通知渠道上**：单条通知里写的 `sound` 会被忽略，而且**一个已经存在的渠道，应用自己改不了它的声音**。所以换音效只能换渠道 id——这就是 `daily-reminders-v2` / `task-alarms-v2` 两个 `-v2` 的来历，每日汇总也一起换，两条用同一个音。旧 id 的渠道在系统设置里会留着，直到卸载或手动清理，属预期。
+安卓 8 以后**声音绑在通知渠道上**：单条通知里写的 `sound` 会被忽略，而且**一个已经存在的渠道，应用自己改不了它的声音**。所以换音效只能换渠道 id——`-v2` 是加「叮」时换的，`-v3` 是 2026-10-22 修下面那个「声音压根没设上」的 bug 时换的（v2 那批渠道已经带着错的值冻结了）。两条渠道一起换代，每日汇总和到点通知用同一个音。旧 id 的渠道在系统设置里会留着，直到卸载或手动清理，属预期。
 
 「叮」是一段 0.8 秒、三条泛音（C6 / G6 / C7）按指数衰减的合成音，由根目录的 `make-sound.mjs` 手写 RIFF/WAVE 头直出，不依赖任何音频库：
 
@@ -170,9 +170,18 @@ APK 里的行为（每天一条汇总，正文是算出来的）：
 node make-sound.mjs    # 生成 android/app/src/main/res/raw/ding.wav
 ```
 
-改音色就编辑脚本顶部那几个常量（`RATE` / `SECONDS` / `TAU` / `PARTIALS`）再跑一次，然后重新构建。渠道里引用的是 `android.resource://com.demo.androidtodo/raw/ding`。
+改音色就编辑脚本顶部那几个常量（`RATE` / `SECONDS` / `TAU` / `PARTIALS`）再跑一次，然后重新构建。
 
-**一个坑**：release 构建里 AGP 的 `optimizeReleaseResources` 会缩短资源路径，`res/raw/ding.wav` 在 APK 里实际存成 `res/lf.wav` 这种名字，`unzip -l | grep raw/` 是查不到的，别当成文件没打进去——资源表里 `0x7f0f0000 raw/ding` 还在，URI 照样解析（`aapt2 dump resources` 可验）。
+**`sound` 传的是文件名，不是 URI。** `setNotificationChannelAsync` 的 `sound` 会交给 `SoundResolver`：它把字符串当作 `res/raw` 里的资源名（顺手去掉扩展名），用 `getIdentifier(name, "raw", packageName)` 查，查到了才拼成 `android.resource://<包名>/raw/<名字>`，**查不到就静默回落成系统默认音**（`content://settings/system/notification_sound`），只在 JS 控制台打一条 error。所以这里写的是 `'ding.wav'`；v2 那版误写成完整 URI，被当作文件名截成了 `android.resource://com.demo` 这种不存在的资源名，于是要么没声音要么只有系统默认音。渠道到底设上了没有，看设备上的这一行最准：
+
+```bash
+adb shell dumpsys notification | grep -o "mId='task-alarms-v3'.*mSound=[^,]*"
+# 期望 mSound=android.resource://com.demo.androidtodo/raw/ding
+```
+
+**另一个坑**：release 构建里 AGP 的 `optimizeReleaseResources` 会缩短资源路径，`res/raw/ding.wav` 在 APK 里实际存成 `res/lf.wav` 这种名字，`unzip -l | grep raw/` 是查不到的，别当成文件没打进去——资源表里 `0x7f0f0000 raw/ding` 还在，URI 照样解析（`aapt2 dump resources` 可验）。
+
+**还没证实的部分**：`android.resource://` 这种渠道铃声在这台小米 15（HyperOS）上究竟会不会响，目前只有 dumpsys 证明它被正确写进了渠道；阿里云的推送文档声称「在客户端创建通道时小米机型调用 setSound() 指定铃声无效」，但同一台机器上飞书、Play Services 的渠道都挂着 `android.resource://.../raw/...`，所以这条说法不能当结论。如果换了 v3 还是哑的，下一个可动的地方是显式加 `audioAttributes`（usage=NOTIFICATION / contentType=SONIFICATION），再不行就退到系统设置里由用户手动给这个渠道选铃声。
 
 ### 准点靠 `USE_EXACT_ALARM`
 

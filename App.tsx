@@ -37,11 +37,12 @@ const makeSamples = (): Todo[] => [
   { id: 2, text: '在手机上预览应用', done: false, date: shift(0), time: '18:00' },
   { id: 3, text: '记录下一步想法', done: false, date: shift(3), time: '09:00' },
 ];
-// 渠道 id 带 -v2：安卓 8 以后声音绑在渠道上，且**已存在的渠道不允许应用再改它的声音**，所以换音只能换新渠道 id。
-const CHANNEL_ID = 'daily-reminders-v2';
-const TASK_CHANNEL_ID = 'task-alarms-v2';
+// 渠道 id 带 -v3：安卓 8 以后声音绑在渠道上，且**已存在的渠道不允许应用再改它的声音**，所以换音只能换新渠道 id。
+const CHANNEL_ID = 'daily-reminders-v3';
+const TASK_CHANNEL_ID = 'task-alarms-v3';
 const ALARM_REGISTRY_KEY = '@android-todo-demo/task-alarms';
-const DING_SOUND = 'android.resource://com.demo.androidtodo/raw/ding';
+// expo 这里要的是 res/raw 里的**文件名**，它自己去查资源再拼成 android.resource://包名/raw/名字；写成完整 URI 会被当成文件名、查不到资源，静默回落成系统默认音（v2 就是这么哑掉的）。
+const DING_SOUND = 'ding.wav';
 const alarmDate = (date: string, time?: string) => { const [y, m, d] = date.split('-').map(Number); const [hh, mm] = (time ?? '09:00').split(':').map(Number); return new Date(y, m - 1, d, hh || 0, mm || 0); };
 const isRingable = (item: Todo) => !item.done && !item.hidden && !item.alarm && !!item.time && alarmDate(item.date, item.time).getTime() > Date.now();
 // 同一分钟的多条合并成一条通知；key 形如 `2026-10-22 13:00`
