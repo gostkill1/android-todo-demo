@@ -5,10 +5,10 @@ import type { AndroidImportance } from 'expo-notifications';
 
 export type NotificationsApi = typeof import('expo-notifications');
 
-// 渠道 id 带 -v5：声音只在渠道创建那一刻有效，之后应用改不动，所以每次改音只能换新 id；旧 id 启动时删掉，免得设置里堆一排同名渠道。
-export const CHANNEL_ID = 'daily-reminders-v5';
-export const TASK_CHANNEL_ID = 'task-alarms-v5';
-export const RETIRED_CHANNEL_IDS = ['daily-reminders', 'daily-reminders-v2', 'daily-reminders-v3', 'daily-reminders-v4', 'task-alarms', 'task-alarms-v2', 'task-alarms-v3', 'task-alarms-v4'];
+// 渠道 id 带 -v6：声音和它的音频属性都只在渠道创建那一刻有效，之后应用改不动，所以每次改只能换新 id；旧 id 启动时删掉，免得设置里堆一排同名渠道。
+export const CHANNEL_ID = 'daily-reminders-v6';
+export const TASK_CHANNEL_ID = 'task-alarms-v6';
+export const RETIRED_CHANNEL_IDS = ['daily-reminders', 'daily-reminders-v2', 'daily-reminders-v3', 'daily-reminders-v4', 'daily-reminders-v5', 'task-alarms', 'task-alarms-v2', 'task-alarms-v3', 'task-alarms-v4', 'task-alarms-v5'];
 
 type NotificationTuningBridge = { ensureChannel: (channelId: string, name: string, description: string, importance: number) => Promise<{ ringtone?: string; channel?: string; recreated?: boolean } | null>; openChannelSettings: (channelId: string) => Promise<'channel' | 'app'> };
 const NotificationTuning = NativeModules.NotificationTuning as NotificationTuningBridge | undefined;

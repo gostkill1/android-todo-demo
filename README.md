@@ -53,6 +53,7 @@ JS 由 Gradle 的 Expo 插件自己打包，不需要提前跑 `expo export`。�
 - **DAILY 触发器是非精确闹钟**，小米等机型上可能晚几分钟到几十分钟。
 - 小米等机型要在系统设置里允许该应用自启动并取消省电限制，否则到点的提醒可能被系统拦截。
 - **到点通知的音色应用自己改不了**：安卓只认渠道创建那一刻的音色，而澎湃不播应用自带的音频文件。要换声音，去设置页「到点提醒铃声」跳进来的系统渠道页里挑（详见附录「声音」一节）。
+- **这台澎湃机上，到点通知的响度跟着媒体音量走**：渠道已经按平台规范声明了 `USAGE_NOTIFICATION / CONTENT_TYPE_SONIFICATION`，播放时也确实是这个 usage（实测抓到过），但 ROM 把通知的增益绑在媒体音量组上——媒体静音，到点就不响。应用侧唯一的出路是把语义换成「闹钟」（`USAGE_ALARM`，走独立的闹钟音量、静音模式也照样响）。2026-10-22 实测确认属性改不动这个绑定，要不要换闹钟语义另说，暂时维持现状，见「声音」一节末尾。
 - 安卓 15（`edgeToEdgeEnabled=true`）起内容画到状态栏和手势横条底下：顶部留白用 `StatusBar.currentHeight` 算，底部避让是固定值，没装 `react-native-safe-area-context`。
 
 ## 目录结构
@@ -167,7 +168,7 @@ APK 里的行为（每天一条汇总，正文是算出来的）：
 
 2026-10-22 起，**每条未到点的待办都由本应用在自己的时间响一次**，不依赖系统日历。只有编辑页把「改用系统日历提醒」那一行打开的任务例外——那些交给日历，本应用不再重复响。
 
-- 通知排在独立渠道 `task-alarms-v5`：可出声的最高优先级 + 震动 + 系统默认通知音（音色为什么不由应用带，见下面那节），标题是 `⏰ HH:mm 待办`，正文是任务内容。
+- 通知排在独立渠道 `task-alarms-v6`：可出声的最高优先级 + 震动 + 系统默认通知音（音色为什么不由应用带，见下面那节），标题是 `⏰ HH:mm 待办`，正文是任务内容。
 - **同一分钟的多条合并成一条**通知：正文取前两条、中间用「、」，还有更多就追加「 等 N 件」。合并的 key 是「日期 时间」整串，所以不同日期的同一个分钟各响各的。
 - **整批重排，不做增量**：任务列表任何变化（新增、编辑、勾选完成、删除、隐藏）都会让那个 `useEffect` 把上一批全部取消，再按当前列表重排。取消要认 id，而这个版本的 `expo-notifications` 没有 `requestIdentifier` 可用（`build/` 与 android 源码都 grep 过），所以排出去的 id 数组记在 AsyncStorage 的 `@android-todo-demo/task-alarms` 里，重启后照样清得掉。列表算出来的签名（每组的 key + 正文）没变时由一个 `useRef` 拦住，不重复排程。
 - **权限只在第一次保存一条「真的会响」的待办时申请**——未来时间、未完成、日历开关关着，三者都满足才弹框，不是进 App 就要。被拒绝的话保存照样成功，但会弹「通知没开启」说明这条到点不会响；首页副标题在还有这类任务时也一直挂着「（通知没开启，到点不会响）」。
@@ -176,7 +177,7 @@ APK 里的行为（每天一条汇总，正文是算出来的）：
 
 ### 设置页的「到点提醒铃声」跳到哪一页
 
-这一行走原生 `openChannelSettings('task-alarms-v5')`，intent 是 `Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS` + 包名 + 渠道 id。在澎湃上它直接落到「任务到点提醒」那一页（允许通知 / 悬浮通知 / 声音 / 振动 / 在锁定屏幕上），**声音那一行是唯一能改这个渠道音色的地方**——应用自己写不进去，原因见下一节。单渠道页叫不开时退到 `ACTION_APP_NOTIFICATION_SETTINGS`（本应用的通知总页），两处都叫不开才弹「打不开通知设置」那条兜底提示。
+这一行走原生 `openChannelSettings('task-alarms-v6')`，intent 是 `Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS` + 包名 + 渠道 id。在澎湃上它直接落到「任务到点提醒」那一页（允许通知 / 悬浮通知 / 声音 / 振动 / 在锁定屏幕上），**声音那一行是唯一能改这个渠道音色的地方**——应用自己写不进去，原因见下一节。单渠道页叫不开时退到 `ACTION_APP_NOTIFICATION_SETTINGS`（本应用的通知总页），两处都叫不开才弹「打不开通知设置」那条兜底提示。
 
 2026-10-22 之前这一行**一直**在走兜底：action 被写成了 `android.settings.CHANNEL_SETTINGS`，系统里没有任何页面响应它，所以每次都抛 `ActivityNotFoundException`。
 
@@ -186,20 +187,30 @@ APK 里的行为（每天一条汇总，正文是算出来的）：
 
 三条实测结论，就是这套做法的全部理由：
 
-1. **安卓 8 以后声音绑在渠道上，而且只在创建那一刻有效。** 单条通知里写的 `sound` 会被忽略；一个已经存在的渠道，应用自己也改不动它的声音（对已存在的 id 调 `setSound` + `createNotificationChannel` 是空操作）。所以任何改音色的动作都只能换渠道 id 重来——这就是 id 从 `daily-reminders` / `task-alarms` 一路走到 `-v5` 的原因，也是 `RETIRED_CHANNEL_IDS` 里那八个旧 id 要在启动时删掉的原因（设置页按**名字**列渠道，不清理就会堆成一排同名条目）。
+1. **安卓 8 以后声音绑在渠道上，而且只在创建那一刻有效。** 单条通知里写的 `sound` 会被忽略；一个已经存在的渠道，应用自己也改不动它的声音（对已存在的 id 调 `setSound` + `createNotificationChannel` 是空操作）。所以任何改音色的动作都只能换渠道 id 重来——这就是 id 从 `daily-reminders` / `task-alarms` 一路走到 `-v6` 的原因（`-v6` 那次是为了补音频属性，理由见本节末尾），也是 `RETIRED_CHANNEL_IDS` 里那十个旧 id 要在启动时删掉的原因（设置页按**名字**列渠道，不清理就会堆成一排同名条目）。
 2. **`expo-notifications` 只会写 `android.resource://`，而澎湃对这种应用私有资源 URI 一律消音。** `setNotificationChannelAsync` 的 `sound` 收的是 `res/raw` 里的**文件名**，`SoundResolver` 用 `getIdentifier(name, "raw", packageName)` 查到了才拼成 `android.resource://<包名>/raw/<名字>`，查不到就静默回落成系统默认音、只在控制台打一条 error。消音那一半是 A/B 出来的：dumpsys 里渠道的 `mSound` 完全正确、`mUserLockedFields=0`、通知记录没有 SILENT 标志、SystemUI 也记了 `AlertCoordinator: onViewBound, buzzBeep`（说明系统决定要出声），但 `RingtonePlayer` 就是不出现 `play`。同一台机器上在 ROM 自己的界面里挑一个音，`mSound` 变成 `content://media/...`、字段被锁上，下一条通知立刻响。
 3. **AOSP 还会拒掉调用方读不到的 media URI**，所以「应用自己塞一个 `content://media/...` 进去」也走不通——会被改写回 `content://settings/system/notification_sound`。
 
-于是渠道改由原生先建（`NotificationTuningModule.ensureChannel`）：用 `RingtoneManager.getActualDefaultRingtoneUri()` 取系统默认通知音写进去，**抢在 expo 把 `android.resource://` 写进来之前**（声音只在创建时算数）；如果这个渠道的音色已经是你在系统页里手挑的 `content://media/...`，就原样留着不动它。当前两条渠道的状态：
+于是渠道改由原生先建（`NotificationTuningModule.ensureChannel`）：用 `RingtoneManager.getActualDefaultRingtoneUri()` 取系统默认通知音写进去，**抢在 expo 把 `android.resource://` 写进来之前**（声音只在创建时算数）；如果这个渠道的音色已经是你在系统页里手挑的 `content://media/...`，就原样留着不动它。2026-10-22 起 `setSound` 用的是两参版本，同时把 `USAGE_NOTIFICATION / CONTENT_TYPE_SONIFICATION` 一起写进去（属性也是创建时算数，所以那次升到了 `-v6`）。当前两条渠道的状态：
 
 ```bash
-adb shell dumpsys notification --noredact | grep -o "mId='task-alarms-v5'.*mSound=[^,]*"
+adb shell dumpsys notification --noredact | grep -o "mId='task-alarms-v6'.*mAudioAttributes=[^,]*"
 # 实测 mSound=content://media/internal/audio/media/260?title=WaterDrop_preview&canonical=1
+#      mAudioAttributes=AudioAttributes: usage=USAGE_NOTIFICATION content=CONTENT_TYPE_SONIFICATION flags=0x800(FLAG_MUTE_HAPTIC)
 ```
 
 那两个文件（`make-sound.mjs`、`android/app/src/main/res/raw/ding.wav`，连带空掉的 `res/raw/`）已于 2026-10-22 从仓库删除，仓库里不再留任何自绘音效的痕迹。
 
 另外两条踩过的坑记在这儿：`AndroidImportance.MAX`（5）会被 `NotificationChannel` 构造函数拒掉，能出声的上限是 `HIGH`(4)，所以原生那层写了 `coerceIn(1, 4)`；release 构建里 AGP 的 `optimizeReleaseResources` 会缩短资源路径，当时那个 `res/raw/ding.wav` 在 APK 里实际存成 `res/lf.wav` 这种名字，`unzip -l | grep raw/` 查不到不代表没打进去。
+
+### 响度：澎湃把通知的音量绑在媒体上，应用改不动
+
+`-v6` 补的音频属性**没有换来音量脱钩**（实测仍是媒体静音到点就不响），但把责任划清了——不是我们漏设：
+
+- 播放那一刻用的确实是通知流。抓法：`adb shell dumpsys audio | grep -E "type:android.media|state:started"`，一秒一发挂着采样，响的那一下是
+  `type:android.media.MediaPlayer u/pid:1000/6301 state:started attr:usage=USAGE_NOTIFICATION content=CONTENT_TYPE_SONIFICATION`——pid 6301 是 system_server，即系统的 RingtonePlayer 在替应用放音，属性原样生效。
+- 框架侧音量组本来是分开的：同一份 `dumpsys audio` 里 `notification` 组 index 10/15、`ring` 10、`alarm` 14、`music` 77/150，`STREAM_NOTIFICATION` 还被澎湃 alias 到了 `STREAM_RING`。该给的组都在，实际响度却听媒体滑条——绑定发生在 ROM 的音频策略/HAL，应用层没有开关。
+- 唯一能确定逃出媒体组的是**闹钟**语义：`ringer mode affected streams = 0x12e` 只覆盖 SYSTEM、RING、MUSIC、NOTIFICATION、DTMF，`STREAM_ALARM` 不在里面，alarm 组也有自己的 index。所以把 usage 换成 `USAGE_ALARM` 就能吃「闹钟音量」，代价是静音模式和勿扰下它照样响。2026-10-22 选择不换，维持 `USAGE_NOTIFICATION`——在 AOSP 机型上它本来就落在通知流，这个写法是规范的。
 
 ### 准点靠 `USE_EXACT_ALARM`
 

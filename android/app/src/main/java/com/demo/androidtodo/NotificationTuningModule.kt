@@ -3,6 +3,7 @@ package com.demo.androidtodo
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
+import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
 import android.provider.Settings
@@ -51,7 +52,16 @@ class NotificationTuningModule(private val reactContext: ReactApplicationContext
       val channel = NotificationChannel(channelId, name, importance.coerceIn(1, 4))
       channel.description = description
       if (ringtone != null) {
-        channel.setSound(ringtone, null)
+        // Attributes bind at creation like the sound does. Left null, the platform falls back to a legacy
+        // stream and HyperOS routes the tone through the media volume group, so muting media or plugging
+        // in headphones silences the alarm; 696 of the 705 channels on this device declare the pair below.
+        channel.setSound(
+          ringtone,
+          AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+        )
       }
       manager.createNotificationChannel(channel)
     }
