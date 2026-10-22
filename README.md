@@ -197,9 +197,9 @@ adb shell dumpsys notification --noredact | grep -o "mId='task-alarms-v5'.*mSoun
 # 实测 mSound=content://media/internal/audio/media/260?title=WaterDrop_preview&canonical=1
 ```
 
-`make-sound.mjs` 和 `android/app/src/main/res/raw/ding.wav` 还在仓库里，但**已经没有任何代码引用它们**，要清掉就直接删这两个文件。
+那两个文件（`make-sound.mjs`、`android/app/src/main/res/raw/ding.wav`，连带空掉的 `res/raw/`）已于 2026-10-22 从仓库删除，仓库里不再留任何自绘音效的痕迹。
 
-另外两条踩过的坑记在这儿：`AndroidImportance.MAX`（5）会被 `NotificationChannel` 构造函数拒掉，能出声的上限是 `HIGH`(4)，所以原生那层写了 `coerceIn(1, 4)`；release 构建里 AGP 的 `optimizeReleaseResources` 会缩短资源路径，`res/raw/ding.wav` 在 APK 里实际存成 `res/lf.wav` 这种名字，`unzip -l | grep raw/` 查不到不代表没打进去。
+另外两条踩过的坑记在这儿：`AndroidImportance.MAX`（5）会被 `NotificationChannel` 构造函数拒掉，能出声的上限是 `HIGH`(4)，所以原生那层写了 `coerceIn(1, 4)`；release 构建里 AGP 的 `optimizeReleaseResources` 会缩短资源路径，当时那个 `res/raw/ding.wav` 在 APK 里实际存成 `res/lf.wav` 这种名字，`unzip -l | grep raw/` 查不到不代表没打进去。
 
 ### 准点靠 `USE_EXACT_ALARM`
 
