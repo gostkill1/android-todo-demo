@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Alert, Animated, BackHandler, Easing, Keyboard, KeyboardAvoidingView, NativeModules, PanResponder, Platform, Pressable, ScrollView, StatusBar as NativeStatusBar, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 
-type Todo = { id: number; text: string; done: boolean; date: string; time?: string; hidden?: boolean; alarm?: boolean; alarmId?: string };
+type Todo = { id: number; text: string; done: boolean; date: string; time?: string; hidden?: boolean; alarm?: boolean };
 type Page = 'home' | 'settings' | 'calendar' | 'reminder' | 'compose';
 type Reminder = { enabled: boolean; hour: string; minute: string; notificationId?: string };
 type Wheel = { year: number; month: number; day: number; hour: number; minute: number };
@@ -37,10 +37,28 @@ const makeSamples = (): Todo[] => [
   { id: 2, text: '在手机上预览应用', done: false, date: shift(0), time: '18:00' },
   { id: 3, text: '记录下一步想法', done: false, date: shift(3), time: '09:00' },
 ];
-const CHANNEL_ID = 'daily-reminders';
-const TASK_CHANNEL_ID = 'task-alarms';
+// 渠道 id 带 -v2：安卓 8 以后声音绑在渠道上，且**已存在的渠道不允许应用再改它的声音**，所以换音只能换新渠道 id。
+const CHANNEL_ID = 'daily-reminders-v2';
+const TASK_CHANNEL_ID = 'task-alarms-v2';
+const ALARM_REGISTRY_KEY = '@android-todo-demo/task-alarms';
+const DING_SOUND = 'android.resource://com.demo.androidtodo/raw/ding';
 const alarmDate = (date: string, time?: string) => { const [y, m, d] = date.split('-').map(Number); const [hh, mm] = (time ?? '09:00').split(':').map(Number); return new Date(y, m - 1, d, hh || 0, mm || 0); };
-const cancelAlarm = async (alarmId?: string) => { if (!alarmId) return; try { const Notifications = await import('expo-notifications'); await Notifications.cancelScheduledNotificationAsync(alarmId); } catch { /* 通知模块不可用时本来也没有东西可取消 */ } };
+const isRingable = (item: Todo) => !item.done && !item.hidden && !item.alarm && !!item.time && alarmDate(item.date, item.time).getTime() > Date.now();
+// 同一分钟的多条合并成一条通知；key 形如 `2026-10-22 13:00`
+const alarmGroups = (items: Todo[]) => {
+  const buckets = new Map<string, Todo[]>();
+  for (const item of items) {
+    if (!isRingable(item)) continue;
+    const key = `${item.date} ${item.time}`;
+    const hit = buckets.get(key);
+    buckets.set(key, hit ? [...hit, item] : [item]);
+  }
+  return [...buckets].map(([key, list]) => ({
+    key,
+    when: alarmDate(key.slice(0, 10), key.slice(11)),
+    body: list.length === 1 ? list[0].text : `${list[0].text}、${list[1].text}${list.length > 2 ? ` 等 ${list.length} 件` : ''}`,
+  }));
+};
 type SystemCalendarBridge = { openCreateEvent: (title: string, description: string, beginTime: number, endTime: number) => Promise<boolean> };
 const SystemCalendar = NativeModules.SystemCalendar as SystemCalendarBridge | undefined;
 // resolve 只代表「创建日程页打开了」：系统界面不回传用户最后点了 ✓ 还是 ✗。
@@ -176,6 +194,7 @@ export default function App() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editSnapshot, setEditSnapshot] = useState<{ text: string; date: string; time?: string; alarm?: boolean } | null>(null);
   const [alarmOn, setAlarmOn] = useState(false);
+  const [canNotify, setCanNotify] = useState(false);
 
   const [page, setPage] = useState<Page>('home');
   const [ready, setReady] = useState(false);
@@ -225,35 +244,39 @@ export default function App() {
   }, [today]);
   useEffect(() => { if (ready) AsyncStorage.setItem(TODO_KEY, JSON.stringify(todos)); }, [todos, ready]);
   useEffect(() => { if (ready) AsyncStorage.setItem(REMINDER_KEY, JSON.stringify(reminder)); }, [reminder, ready]);
+  // 通知权限开机读一次：给过就自动把未来的任务排上，没给过就在首页提示一句，不再反复弹授权框。
+  useEffect(() => {
+    if (!ready) return;
+    let ignore = false;
+    void (async () => {
+      try {
+        const Notifications = await import('expo-notifications');
+        if (!ignore) setCanNotify((await Notifications.getPermissionsAsync()).granted);
+      } catch { /* Expo Go 里没有通知模块 */ }
+    })();
+    return () => { ignore = true; };
+  }, [ready]);
 
-  const toggleTodo = (id: number) => {
-    const target = todos.find((item) => item.id === id);
-    setTodos((items) => items.map((item) => (item.id === id ? { ...item, done: !item.done, alarmId: undefined } : item)));
-    void cancelAlarm(target?.alarmId);
-  };
-  const removeTodo = (id: number) => Alert.alert('删除任务', '确定要删除这个任务吗？', [{ text: '取消', style: 'cancel' }, { text: '删除', style: 'destructive', onPress: () => { const target = todos.find((item) => item.id === id); void cancelAlarm(target?.alarmId); setTodos((items) => items.filter((item) => item.id !== id)); } }]);
+  // 增删改/勾选/隐藏都只动 todos，到点通知由那个列表上的 effect 整批重排，这里不再逐条取消闹钟。
+  const toggleTodo = (id: number) => setTodos((items) => items.map((item) => (item.id === id ? { ...item, done: !item.done } : item)));
+  const removeTodo = (id: number) => Alert.alert('删除任务', '确定要删除这个任务吗？', [{ text: '取消', style: 'cancel' }, { text: '删除', style: 'destructive', onPress: () => setTodos((items) => items.filter((item) => item.id !== id)) }]);
   const hideTodo = (id: number) => Alert.alert('隐藏这条待办？', '它不再出现在首页，但依然保留在日历里。', [{ text: '取消', style: 'cancel' }, { text: '隐藏', onPress: () => setTodos((items) => items.map((item) => (item.id === id ? { ...item, hidden: true } : item))) }]);
   const showTodo = (id: number) => setTodos((items) => items.map((item) => (item.id === id ? { ...item, hidden: false } : item)));
   const restore = () => Alert.alert('恢复示例任务', '当前任务会被替换为 3 条示例任务，隐藏标记也会一并清除。', [{ text: '取消', style: 'cancel' }, { text: '恢复', onPress: () => setTodos(makeSamples()) }]);
   const composeDate = dateKey(new Date(wheel.year, wheel.month - 1, wheel.day));
   const composeTime = `${pad(wheel.hour)}:${pad(wheel.minute)}`;
 
+  // 这一条只负责「交给系统日历」。日历用不了或时间已过就把 alarm 关掉，让本应用自己的到点通知接管，不会一条都不响。
   const syncTaskAlarm = async (todo: Todo): Promise<Todo> => {
-    await cancelAlarm(todo.alarmId);
-    if (!todo.alarm || todo.done) return { ...todo, alarmId: undefined };
     const when = alarmDate(todo.date, todo.time);
-    if (when.getTime() <= Date.now()) { Alert.alert('时间已经过了', '这条待办的时间早于此刻，日历里安排不了这个点，其余改动照常保存。'); return { ...todo, alarm: false, alarmId: undefined }; }
+    if (when.getTime() <= Date.now()) { Alert.alert('时间已经过了', '这条待办的时间早于此刻，日历里安排不了这个点，改由本应用到点响一次。'); return { ...todo, alarm: false }; }
     try {
       await openCalendarEvent(todo.text, when);
-      return { ...todo, alarmId: undefined };
-    } catch { /* 系统日历叫不动，退回本应用自己的通知 */ }
-    const Notifications = await import('expo-notifications');
-    const granted = (await Notifications.getPermissionsAsync()).granted || (await Notifications.requestPermissionsAsync()).granted;
-    if (!granted) { Alert.alert('日历没能打开', '这台机器上的系统日历叫不起来，通知权限也没给，这条到点不会响。任务本身已经保存。'); return { ...todo, alarm: false, alarmId: undefined }; }
-    if (Platform.OS === 'android') await Notifications.setNotificationChannelAsync(TASK_CHANNEL_ID, { name: '任务提醒', importance: Notifications.AndroidImportance.MAX, sound: 'default', vibrationPattern: [0, 250, 250, 250] });
-    Alert.alert('日历没能打开', '这台机器上的系统日历叫不起来，这条改用应用通知响一次，任务本身已经保存。');
-    const alarmId = await Notifications.scheduleNotificationAsync({ content: { title: '📅 待办提醒', body: todo.text, sound: 'default' }, trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: when, channelId: TASK_CHANNEL_ID } });
-    return { ...todo, alarmId };
+      return todo;
+    } catch {
+      Alert.alert('日历没能打开', '这台机器上的系统日历叫不起来，这条改由本应用在到点时响一次。任务本身已经保存。');
+      return { ...todo, alarm: false };
+    }
   };
 
   const saveCompose = async () => {
@@ -266,14 +289,13 @@ export default function App() {
     if (existing) setTodos((items) => items.map((item) => (item.id === base.id ? base : item)));
     else setTodos((items) => [base, ...items]);
     setDraft(''); setEditingId(null); setEditSnapshot(null); setAlarmOn(false); setPage('home');
-    let settled: Todo;
-    try {
-      settled = await syncTaskAlarm(base);
-    } catch {
-      settled = { ...base, alarm: false, alarmId: undefined };
-      Alert.alert('提醒没安排上', '这台机器上既叫不动系统日历，通知模块也不在包里，任务本身已经保存。');
+    if (base.alarm) {
+      const settled = await syncTaskAlarm(base);
+      if (settled.alarm !== base.alarm) setTodos((items) => items.map((item) => (item.id === settled.id ? { ...item, alarm: false } : item)));
+      return;
     }
-    if (settled.alarm !== base.alarm || settled.alarmId !== base.alarmId) setTodos((items) => items.map((item) => (item.id === settled.id ? { ...item, alarm: settled.alarm, alarmId: settled.alarmId } : item)));
+    // 只有「这条真的会响」才去要权限，避免随便存一条未来的任务也弹授权框
+    if (isRingable(base) && !(await ensureNotifyPermission())) Alert.alert('通知没开启', '系统还不允许本应用发通知，这条到点不会响。在系统设置里允许之后，把这条改一下再保存就会排上。');
   };
   const leaveCompose = () => { setDraft(''); setEditingId(null); setEditSnapshot(null); setAlarmOn(false); setPage('home'); };
   const enterEdit = (todo: Todo) => {
@@ -293,7 +315,7 @@ export default function App() {
   const applyReminder = async (base: Reminder, items: Todo[], request: boolean) => {
     const Notifications = await import('expo-notifications');
     Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldPlaySound: true, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }) });
-    if (Platform.OS === 'android') await Notifications.setNotificationChannelAsync(CHANNEL_ID, { name: '每日待办提醒', importance: Notifications.AndroidImportance.HIGH, sound: 'default' });
+    if (Platform.OS === 'android') await Notifications.setNotificationChannelAsync(CHANNEL_ID, { name: '每日待办提醒', importance: Notifications.AndroidImportance.HIGH, sound: DING_SOUND });
     if (!base.enabled) {
       if (scheduledIdRef.current) await Notifications.cancelScheduledNotificationAsync(scheduledIdRef.current).catch(() => {});
       scheduledIdRef.current = undefined; appliedRef.current = '';
@@ -310,6 +332,47 @@ export default function App() {
     scheduledIdRef.current = notificationId; appliedRef.current = signature;
     return { ...base, notificationId };
   };
+
+  const alarmSignature = useRef('');
+
+  // 列表一变就整批重排：先取消上一批（id 记在本地存储里，所以重启后也清得掉），再按当前列表重排。
+  const syncTaskAlarms = async (items: Todo[]) => {
+    const groups = alarmGroups(items);
+    const signature = groups.map((group) => `${group.key}|${group.body}`).join('||');
+    if (signature === alarmSignature.current) return;
+    alarmSignature.current = signature;
+    try {
+      const Notifications = await import('expo-notifications');
+      Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldPlaySound: true, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }) });
+      if (Platform.OS === 'android') await Notifications.setNotificationChannelAsync(TASK_CHANNEL_ID, { name: '任务到点提醒', description: '每条待办到自己的时间响一次', importance: Notifications.AndroidImportance.MAX, sound: DING_SOUND, vibrationPattern: [0, 250, 250, 250] });
+      const stored = await AsyncStorage.getItem(ALARM_REGISTRY_KEY);
+      for (const id of stored ? (JSON.parse(stored) as string[]) : []) await Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
+      const ids: string[] = [];
+      for (const group of groups) {
+        const id = await Notifications.scheduleNotificationAsync({ content: { title: `⏰ ${group.key.slice(11)} 待办`, body: group.body }, trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: group.when, channelId: TASK_CHANNEL_ID } });
+        if (id) ids.push(id);
+      }
+      await AsyncStorage.setItem(ALARM_REGISTRY_KEY, JSON.stringify(ids));
+    } catch (error) {
+      alarmSignature.current = '';
+      console.warn('到点通知排不出去：', error);
+    }
+  };
+
+  const ensureNotifyPermission = async () => {
+    if (canNotify) return true;
+    try {
+      const Notifications = await import('expo-notifications');
+      const granted = (await Notifications.getPermissionsAsync()).granted || (await Notifications.requestPermissionsAsync()).granted;
+      setCanNotify(granted);
+      return granted;
+    } catch { return false; }
+  };
+
+  useEffect(() => {
+    if (!ready || !canNotify) return;
+    void syncTaskAlarms(todos);
+  }, [ready, canNotify, todos]);
 
   useEffect(() => {
     if (!ready) return;
@@ -386,10 +449,10 @@ export default function App() {
     return tabShell(<ScrollView contentContainerStyle={styles.scroll}><Header title="日历" /><View style={styles.monthBar}><Pressable onPress={() => setMonth((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}><Text style={styles.arrow}>‹</Text></Pressable><Text style={styles.monthTitle}>{month.getFullYear()} 年 {month.getMonth() + 1} 月</Text><Pressable onPress={() => setMonth((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))}><Text style={styles.arrow}>›</Text></Pressable></View><View style={styles.calendar}>{weekdays.map((day) => <Text key={day} style={styles.weekday}>{day}</Text>)}{cells.map((day, i) => { if (day < 1 || day > totalDays) return <View key={`blank${i}`} style={styles.dayCell} />; const key = dateKey(new Date(month.getFullYear(), month.getMonth(), day)); const selected = key === selectedDate; const hasTodo = todos.some((todo) => todo.date === key); return <Pressable key={key} onPress={() => setSelectedDate(key)} style={styles.dayCell}><View style={[styles.dayCircle, selected && styles.selectedDay]}><Text style={[styles.dayText, selected && styles.selectedDayText]}>{day}</Text></View>{hasTodo && <View style={[styles.dot, selected && styles.whiteDot]} />}</Pressable>; })}</View><Text style={styles.sectionTitle}>{formatDate(selectedDate)} 的待办</Text>{dayTodos.length ? <View style={styles.list}>{dayTodos.map((todo) => { const late = todo.date < today && !todo.done; return <TodoRow key={todo.id} todo={todo} late={late} timeLabel={todo.time} onToggle={late ? undefined : () => toggleTodo(todo.id)} action={<>{todo.hidden && <Action label="显示" tone="brand" onPress={() => showTodo(todo.id)} />}<Action label="删除" onPress={() => removeTodo(todo.id)} /></>} />; })}</View> : <Text style={styles.empty}>这一天没有待办事项</Text>}</ScrollView>);
   }
   if (page === 'reminder') return <View style={screenStyle}><StatusBar style="dark" /><Header title="定时提醒" onBack={goBack} /><View style={styles.card}><View style={styles.row}><View style={styles.rowText}><Text style={styles.cardTitle}>每日提醒</Text><Text style={styles.hint}>拨动开关立刻生效，不用保存。到点会推送一条今天的待办汇总。</Text></View><Switch value={reminder.enabled} onValueChange={(enabled) => void commitReminder({ ...reminder, enabled })} trackColor={{ false: '#D0D5DD', true: '#625BFF' }} /></View><View style={styles.line} /><Text style={styles.cardTitle}>提醒时间 {reminder.hour}:{reminder.minute}（24 小时制）</Text><View style={styles.wheel}><WheelColumn width={76} options={range(0, 23)} value={Number(reminder.hour)} onChange={(hour) => void commitReminder({ ...reminder, hour: pad(hour) })} /><Text style={styles.colon}>:</Text><WheelColumn width={76} options={range(0, 59)} value={Number(reminder.minute)} onChange={(minute) => void commitReminder({ ...reminder, minute: pad(minute) })} /></View><Text style={styles.hint}>上下滚动数字来调整小时和分钟，松手就生效。</Text></View></View>;
-  if (page === 'compose') return <View style={screenStyle}><StatusBar style="dark" /><Header title={editingId == null ? '新建待办' : '编辑待办'} onBack={goBack} /><KeyboardAvoidingView style={styles.flex} behavior="padding"><ScrollView style={styles.flex} contentContainerStyle={styles.composeScroll} keyboardShouldPersistTaps="handled"><TextInput value={draft} onChangeText={setDraft} multiline blurOnSubmit={false} placeholder="要做什么？" placeholderTextColor="#8A94A6" style={styles.composeInput} /><View style={styles.wheel}><WheelColumn compact wide width={76} options={yearOptions} value={wheel.year} onChange={(year) => patchWheel({ year })} isRejected={(year) => wheelIsPast({ year })} onRejected={flashPastWarning} onDragStart={Keyboard.dismiss} /><WheelColumn compact width={58} options={monthOptions} value={wheel.month} onChange={(month) => patchWheel({ month })} isRejected={(month) => wheelIsPast({ month })} onRejected={flashPastWarning} onDragStart={Keyboard.dismiss} /><WheelColumn compact width={58} options={dayOptions} value={wheel.day} onChange={(day) => patchWheel({ day })} isRejected={(day) => wheelIsPast({ day })} onRejected={flashPastWarning} onDragStart={Keyboard.dismiss} /><WheelColumn compact width={58} options={hourOptions} value={wheel.hour} onChange={(hour) => patchWheel({ hour })} isRejected={(hour) => wheelIsPast({ hour })} onRejected={flashPastWarning} onDragStart={Keyboard.dismiss} /><WheelColumn compact width={58} options={minuteOptions} value={wheel.minute} onChange={(minute) => patchWheel({ minute })} isRejected={(minute) => wheelIsPast({ minute })} onRejected={flashPastWarning} onDragStart={Keyboard.dismiss} /></View><View style={styles.pastWarnSlot}><Animated.Text style={[styles.pastWarnText, { opacity: pastWarn }]}>不可以新建过去的任务哦！</Animated.Text></View><View style={styles.alarmRow}><View style={styles.rowText}><Text style={styles.cardTitle}>日历提醒</Text><Text style={styles.hint}>保存后会跳到系统日历的新建日程，标题和时间都替你填好了，你在日历里点右上角 ✓ 才算真的存下。之后完成或删除这条任务，日历里的日程不会自动跟着删。</Text></View><Switch value={alarmOn} onValueChange={setAlarmOn} trackColor={{ false: '#D0D5DD', true: '#625BFF' }} /></View></ScrollView><Pressable onPress={saveCompose} style={[styles.saveButton, styles.footerButton]}><Text style={styles.saveText}>保存</Text></Pressable></KeyboardAvoidingView></View>;
+  if (page === 'compose') return <View style={screenStyle}><StatusBar style="dark" /><Header title={editingId == null ? '新建待办' : '编辑待办'} onBack={goBack} /><KeyboardAvoidingView style={styles.flex} behavior="padding"><ScrollView style={styles.flex} contentContainerStyle={styles.composeScroll} keyboardShouldPersistTaps="handled"><TextInput value={draft} onChangeText={setDraft} multiline blurOnSubmit={false} placeholder="要做什么？" placeholderTextColor="#8A94A6" style={styles.composeInput} /><View style={styles.wheel}><WheelColumn compact wide width={76} options={yearOptions} value={wheel.year} onChange={(year) => patchWheel({ year })} isRejected={(year) => wheelIsPast({ year })} onRejected={flashPastWarning} onDragStart={Keyboard.dismiss} /><WheelColumn compact width={58} options={monthOptions} value={wheel.month} onChange={(month) => patchWheel({ month })} isRejected={(month) => wheelIsPast({ month })} onRejected={flashPastWarning} onDragStart={Keyboard.dismiss} /><WheelColumn compact width={58} options={dayOptions} value={wheel.day} onChange={(day) => patchWheel({ day })} isRejected={(day) => wheelIsPast({ day })} onRejected={flashPastWarning} onDragStart={Keyboard.dismiss} /><WheelColumn compact width={58} options={hourOptions} value={wheel.hour} onChange={(hour) => patchWheel({ hour })} isRejected={(hour) => wheelIsPast({ hour })} onRejected={flashPastWarning} onDragStart={Keyboard.dismiss} /><WheelColumn compact width={58} options={minuteOptions} value={wheel.minute} onChange={(minute) => patchWheel({ minute })} isRejected={(minute) => wheelIsPast({ minute })} onRejected={flashPastWarning} onDragStart={Keyboard.dismiss} /></View><View style={styles.pastWarnSlot}><Animated.Text style={[styles.pastWarnText, { opacity: pastWarn }]}>不可以新建过去的任务哦！</Animated.Text></View><View style={styles.alarmRow}><View style={styles.rowText}><Text style={styles.cardTitle}>改用系统日历提醒</Text><Text style={styles.hint}>默认由本应用在自己的时间点响一声提醒你。打开这一条就改成交给系统日历：保存后跳到新建日程页，标题和时间都替你填好，你在日历里点右上角 ✓ 才算真的存下，这条不再重复发应用通知；之后完成或删除任务，日历里的日程不会自动删。</Text></View><Switch value={alarmOn} onValueChange={setAlarmOn} trackColor={{ false: '#D0D5DD', true: '#625BFF' }} /></View></ScrollView><Pressable onPress={saveCompose} style={[styles.saveButton, styles.footerButton]}><Text style={styles.saveText}>保存</Text></Pressable></KeyboardAvoidingView></View>;
   if (page === 'settings') return tabShell(<><Header title="设置" /><View style={styles.card}><Pressable onPress={() => setPage('reminder')} style={styles.menu}><View style={styles.rowText}><Text style={styles.cardTitle}>定时提醒</Text><Text style={styles.hint}>每天 {reminder.hour}:{reminder.minute}{reminder.enabled ? '' : '（未开启）'}</Text></View><Text style={styles.chevron}>›</Text></Pressable></View><Text style={styles.dataLabel}>数据</Text><Pressable onPress={restore} style={styles.restore}><Text style={styles.restoreTitle}>恢复示例任务</Text><Text style={styles.restoreHint}>用预设任务替换当前列表</Text></Pressable></>);
   return tabShell(<>
-    <View style={styles.header}><View><Text style={styles.title}>待办清单</Text><Text style={styles.subtitle}>{overdue.length ? `${overdue.length} 件已逾期 · ` : ''}今天 {todayOpen} 件待完成</Text></View></View>
+    <View style={styles.header}><View><Text style={styles.title}>待办清单</Text><Text style={styles.subtitle}>{overdue.length ? `${overdue.length} 件已逾期 · ` : ''}今天 {todayOpen} 件待完成{!canNotify && todos.some(isRingable) ? '（通知没开启，到点不会响）' : ''}</Text></View></View>
       <ScrollView style={styles.flex} contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         {overdue.length > 0 && <><Text style={styles.sectionTitle}>逾期</Text><View style={styles.list}>{overdue.map((todo) => <TodoRow key={todo.id} todo={todo} late timeLabel={dueLabel(todo)} action={<Action label="隐藏" tone="muted" onPress={() => hideTodo(todo.id)} />} />)}</View></>}
         <Text style={styles.sectionTitle}>今天</Text>
